@@ -6,8 +6,23 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-const prisma = globalForPrisma.prisma ?? new PrismaClient();
+const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log: process.env.NODE_ENV === "development" ? ["error"] : [],
+  });
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+
+// Validate required env vars at startup
+const required = [
+  "BETTER_AUTH_SECRET",
+  "MICROSOFT_CLIENT_ID",
+  "MICROSOFT_CLIENT_SECRET",
+];
+const missing = required.filter((k) => !process.env[k]);
+if (missing.length > 0) {
+  console.error(`[AUTH] Missing required env vars: ${missing.join(", ")}`);
+}
 
 export const auth = betterAuth({
   database: prismaAdapter(prisma, {
@@ -33,16 +48,15 @@ export const auth = betterAuth({
       clientSecret: process.env.MICROSOFT_CLIENT_SECRET as string,
       tenantId: process.env.MICROSOFT_TENANT_ID || "common",
       authority:
-        process.env.MICROSOFT_AUTHORITY ||
-        "https://login.microsoftonline.com",
+        process.env.MICROSOFT_AUTHORITY || "https://login.microsoftonline.com",
       prompt: "select_account",
     },
   },
 
   // ─── Session ───────────────────────────────────────────────────────
   session: {
-    expiresIn: 60 * 60 * 24 * 7,       // 7 days
-    updateAge: 60 * 60 * 24,            // 1 day
+    expiresIn: 60 * 60 * 24 * 7, // 7 days
+    updateAge: 60 * 60 * 24, // 1 day
     cookieCache: {
       enabled: true,
       maxAge: 60 * 5,
@@ -51,10 +65,7 @@ export const auth = betterAuth({
 
   // ─── Advanced Security ──────────────────────────────────────────────
   advanced: {
-    cookieCache: {
-      enabled: true,
-    },
-    crossSubdomainCookies: {
+    crossSubDomainCookies: {
       enabled: false,
     },
   },
