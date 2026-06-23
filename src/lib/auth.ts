@@ -2,11 +2,16 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { PrismaClient } from "@prisma/client";
 
-const prisma = new PrismaClient();
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined;
+};
+
+const prisma = globalForPrisma.prisma ?? new PrismaClient();
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
 export const auth = betterAuth({
   database: prismaAdapter(prisma, {
-    provider: "sqlite",
+    provider: "postgresql",
   }),
 
   // ─── Email & Password ──────────────────────────────────────────────
@@ -15,6 +20,10 @@ export const auth = betterAuth({
     minPasswordLength: 8,
     maxPasswordLength: 128,
     autoSignIn: true,
+    sendResetPassword: async ({ user, url, token }, request) => {
+      console.log(`[PASSWORD RESET] To: ${user.email}, URL: ${url}`);
+    },
+    revokeSessionsOnPasswordReset: true,
   },
 
   // ─── Social Providers ──────────────────────────────────────────────
@@ -33,10 +42,10 @@ export const auth = betterAuth({
   // ─── Session ───────────────────────────────────────────────────────
   session: {
     expiresIn: 60 * 60 * 24 * 7,       // 7 days
-    updateAge: 60 * 60 * 24,            // 1 day – refreshes session activity
+    updateAge: 60 * 60 * 24,            // 1 day
     cookieCache: {
       enabled: true,
-      maxAge: 60 * 5,                   // cache cookie for 5 minutes
+      maxAge: 60 * 5,
     },
   },
 
@@ -50,30 +59,12 @@ export const auth = betterAuth({
     },
   },
 
-  // ─── Email Verification (production-ready) ─────────────────────────
+  // ─── Email Verification ─────────────────────────────────────────────
   emailVerification: {
     sendVerificationEmail: async ({ user, url, token }, request) => {
-      // In production, replace with your email service (Resend, SendGrid, etc.)
-      // Example with Resend:
-      // await resend.emails.send({
-      //   from: 'noreply@yourdomain.com',
-      //   to: user.email,
-      //   subject: 'Verify your email address',
-      //   html: `<p>Click <a href="${url}">here</a> to verify your email.</p>`,
-      // });
       console.log(`[EMAIL VERIFICATION] To: ${user.email}, URL: ${url}`);
     },
     autoSignInAfterVerification: true,
-  },
-
-  // ─── Password Reset ────────────────────────────────────────────────
-  emailAndPassword: {
-    enabled: true,
-    sendResetPassword: async ({ user, url, token }, request) => {
-      // In production, replace with your email service
-      console.log(`[PASSWORD RESET] To: ${user.email}, URL: ${url}`);
-    },
-    revokeSessionsOnPasswordReset: true,
   },
 
   // ─── Account ───────────────────────────────────────────────────────
