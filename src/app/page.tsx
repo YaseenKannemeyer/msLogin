@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { signIn, signOut, useSession } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export default function Home() {
+function AuthPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { data: session, isPending, error: sessionError } = useSession();
@@ -681,5 +681,13 @@ export default function Home() {
         </div>
       </footer>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense>
+      <AuthPage />
+    </Suspense>
   );
 }
