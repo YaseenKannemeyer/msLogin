@@ -16,11 +16,29 @@ model User {
   email         String    @unique
   emailVerified Boolean   @default(false)
   image         String?
+  phoneNumber   String?
+  mfaEnabled    Boolean   @default(false)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   sessions Session[]
   accounts Account[]
+  mfaCodes  MfaCode[]
+}
+
+model MfaCode {
+  id         String   @id @default(uuid())
+  userId     String
+  code       String
+  phoneNumber String
+  method     String   @default("sms") // "sms" or "whatsapp"
+  verified   Boolean  @default(false)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Session {
