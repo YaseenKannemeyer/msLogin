@@ -8,4 +8,6 @@ export const db =
   globalForPrisma.prisma ??
   new PrismaClient()
 
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db
+const nodeProcess = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process
+
+if (nodeProcess?.env?.NODE_ENV !== 'production') globalForPrisma.prisma = db

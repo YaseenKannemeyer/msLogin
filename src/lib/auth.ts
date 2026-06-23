@@ -2,6 +2,10 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { PrismaClient } from "@prisma/client";
 
+declare const process: {
+  env: Record<string, string | undefined> & { NODE_ENV?: string };
+};
+
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
