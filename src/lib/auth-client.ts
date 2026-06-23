@@ -1,7 +1,9 @@
 import { createAuthClient } from "better-auth/react";
 
 export const authClient = createAuthClient({
-  baseURL: process.env.NEXT_PUBLIC_APP_URL || "",
+  // Empty string = always use relative URLs (same origin).
+  // This avoids CORS issues regardless of where the app is deployed.
+  baseURL: "",
 });
 
 export const {
