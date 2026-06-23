@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { signIn, signOut, signUp, useSession } from "@/lib/auth-client";
+import { signIn, signOut, useSession, authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -35,6 +35,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { MfaVerifyPage, MfaManageCard } from "@/components/mfa";
+
+// ─── MFA Status Type ─────────────────────────────────────────────
+interface MfaStatus {
+  mfaEnabled: boolean;
+  phoneNumber: string | null;
+  hasPhoneNumber: boolean;
+  email: string;
+  name: string;
+}
 
 function AuthPage() {
   const router = useRouter();
@@ -51,6 +61,13 @@ function AuthPage() {
   const [authError, setAuthError] = useState("");
   const [authSuccess, setAuthSuccess] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [verificationEmailSent, setVerificationEmailSent] = useState("");
+
+  // MFA state
+  const [mfaStatus, setMfaStatus] = useState<MfaStatus | null>(null);
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [mfaVerified, setMfaVerified] = useState(false);
+  const [checkingMfa, setCheckingMfa] = useState(false);
 
   // Reset form errors when toggling sign in / sign up
   useEffect(() => {
@@ -80,22 +97,73 @@ function AuthPage() {
     }
   }, [searchParams]);
 
+  // ─── Check MFA status when session appears ────────────────────────
+  const checkMfaStatus = useCallback(async () => {
+    if (!session?.user?.id) return;
+    setCheckingMfa(true);
+    try {
+      const res = await fetch("/api/mfa");
+      if (res.ok) {
+        const data = await res.json();
+        setMfaStatus(data);
+        if (data.mfaEnabled) {
+          setMfaRequired(true);
+          setMfaVerified(false);
+        }
+      }
+    } catch {
+      // If MFA check fails, let them through (non-blocking)
+    } finally {
+      setCheckingMfa(false);
+    }
+  }, [session?.user?.id]);
+
+  // Check MFA when session first loads
+  useEffect(() => {
+    if (session?.user?.id) {
+      checkMfaStatus();
+    }
+  }, [session?.user?.id, checkMfaStatus]);
+
   // ─── Microsoft OAuth Sign In ────────────────────────────────────────
   const handleMicrosoftSignIn = async () => {
     setAuthError("");
+    setVerificationEmailSent("");
     setLoading(true);
     try {
       await signIn.social({
         provider: "microsoft",
         callbackURL: "/",
       });
-      // If we get here without redirect, something went wrong
       setAuthError("Microsoft sign-in redirect failed. Please try again.");
     } catch (err: unknown) {
       const message =
         err instanceof Error
           ? err.message
           : "Microsoft sign-in failed. Please check your configuration.";
+      setAuthError(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ─── Resend Verification Email ────────────────────────────────────
+  const handleResendVerification = async () => {
+    if (!email.trim()) return;
+    setAuthError("");
+    setVerificationEmailSent("");
+    setLoading(true);
+    try {
+      await authClient.sendVerificationEmail({
+        email: email.trim(),
+        callbackURL: "/",
+      });
+      setVerificationEmailSent(email.trim());
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to send verification email.";
       setAuthError(message);
     } finally {
       setLoading(false);
@@ -122,7 +190,9 @@ function AuthPage() {
 
       if (result.error) {
         if (result.error.status === 403) {
-          setAuthError("Please verify your email address before signing in.");
+          setAuthError(
+            "Your email address has not been verified. Check your inbox for the verification link.",
+          );
         } else if (result.error.status === 401) {
           setAuthError(
             "Invalid email or password. Please check your credentials.",
@@ -138,6 +208,7 @@ function AuthPage() {
         }
       }
       // Success: session is set automatically by Better Auth
+      // MFA check will happen in useEffect
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "An unexpected error occurred.";
@@ -175,7 +246,7 @@ function AuthPage() {
 
     setLoading(true);
     try {
-      const result = await signUp.email({
+      const result = await authClient.signUp.email({
         name: name.trim(),
         email: email.trim(),
         password,
@@ -193,9 +264,11 @@ function AuthPage() {
           );
         }
       } else {
-        // Success
-        setAuthSuccess("Account created successfully! You are now signed in.");
+        setAuthSuccess(
+          "Account created! Check your email for a verification link, then sign in.",
+        );
         setIsSignUp(false);
+        setEmail("");
         setName("");
         setPassword("");
         setConfirmPassword("");
@@ -211,6 +284,9 @@ function AuthPage() {
 
   // ─── Sign Out ──────────────────────────────────────────────────────
   const handleSignOut = async () => {
+    setMfaRequired(false);
+    setMfaVerified(false);
+    setMfaStatus(null);
     await signOut({
       fetchOptions: {
         onSuccess: () => {
@@ -218,6 +294,18 @@ function AuthPage() {
         },
       },
     });
+  };
+
+  // ─── MFA Verified Handler ─────────────────────────────────────────
+  const handleMfaVerified = () => {
+    setMfaVerified(true);
+    setMfaRequired(false);
+  };
+
+  // ─── MFA Cancel (sign out) ─────────────────────────────────────────
+  const handleMfaCancel = () => {
+    setMfaRequired(false);
+    handleSignOut();
   };
 
   // ─── Loading State ────────────────────────────────────────────────
@@ -235,8 +323,24 @@ function AuthPage() {
     );
   }
 
+  // ─── MFA Verification Page ────────────────────────────────────────
+  // After login, if user has MFA enabled, show verification page
+  if (session?.user && mfaRequired && !mfaVerified) {
+    return (
+      <MfaVerifyPage
+        userId={session.user.id}
+        userEmail={session.user.email}
+        userName={session.user.name}
+        userImage={session.user.image}
+        maskedPhone={mfaStatus?.phoneNumber ?? null}
+        onVerified={handleMfaVerified}
+        onCancel={handleMfaCancel}
+      />
+    );
+  }
+
   // ─── Authenticated Dashboard ───────────────────────────────────────
-  if (session?.user) {
+  if (session?.user && (!mfaRequired || mfaVerified)) {
     return (
       <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
         {/* Header */}
@@ -474,6 +578,100 @@ function AuthPage() {
               </CardContent>
             </Card>
 
+            {/* Security & MFA Card */}
+            <Card className="border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+              <CardHeader>
+                <CardTitle className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                  <svg
+                    className="h-5 w-5 text-slate-500"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                    />
+                  </svg>
+                  Security
+                </CardTitle>
+                <CardDescription className="text-slate-500 dark:text-slate-400">
+                  Manage your account security and two-step verification
+                  settings
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* MFA Card */}
+                {mfaStatus && (
+                  <MfaManageCard
+                    userId={session.user.id}
+                    mfaEnabled={mfaStatus.mfaEnabled}
+                    hasPhoneNumber={mfaStatus.hasPhoneNumber}
+                    phoneNumber={mfaStatus.phoneNumber}
+                    onMfaChanged={checkMfaStatus}
+                  />
+                )}
+
+                {/* Email Verification Status */}
+                <div className="flex items-center justify-between p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`h-10 w-10 rounded-lg flex items-center justify-center ${
+                        session.user.emailVerified
+                          ? "bg-emerald-100 dark:bg-emerald-900/30"
+                          : "bg-amber-100 dark:bg-amber-900/30"
+                      }`}
+                    >
+                      <svg
+                        className={`h-5 w-5 ${
+                          session.user.emailVerified
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : "text-amber-600 dark:text-amber-400"
+                        }`}
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+                        />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-slate-900 dark:text-white">
+                        Email Verification
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {session.user.emailVerified
+                          ? "Your email is verified"
+                          : "Your email has not been verified"}
+                      </p>
+                    </div>
+                  </div>
+                  {session.user.emailVerified ? (
+                    <Badge
+                      variant="secondary"
+                      className="bg-emerald-50 text-emerald-700 border-emerald-200"
+                    >
+                      Verified
+                    </Badge>
+                  ) : (
+                    <Badge
+                      variant="secondary"
+                      className="bg-amber-50 text-amber-700 border-amber-200"
+                    >
+                      Unverified
+                    </Badge>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Quick Actions */}
             <Card className="border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
               <CardHeader>
@@ -536,65 +734,28 @@ function AuthPage() {
                         </div>
                         <div className="text-left">
                           <p className="font-medium text-slate-900 dark:text-white">
-                            Security Settings
+                            Change Password
                           </p>
                           <p className="text-xs text-slate-500 dark:text-slate-400">
-                            Manage password and security
+                            Update your account password
                           </p>
                         </div>
                       </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>Security Settings</DialogTitle>
+                        <DialogTitle>Change Password</DialogTitle>
                         <DialogDescription>
-                          Manage your account security preferences.
+                          Update your account password to keep your account
+                          secure.
                         </DialogDescription>
                       </DialogHeader>
                       <div className="space-y-4 py-4">
-                        <div className="flex items-center justify-between p-3 rounded-lg border border-slate-200 dark:border-slate-700">
-                          <div>
-                            <p className="text-sm font-medium text-slate-900 dark:text-white">
-                              Change Password
-                            </p>
-                            <p className="text-xs text-slate-500 dark:text-slate-400">
-                              Update your account password
-                            </p>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              router.push("/");
-                            }}
-                          >
-                            Change
-                          </Button>
-                        </div>
-                        <div className="flex items-center justify-between p-3 rounded-lg border border-slate-200 dark:border-slate-700">
-                          <div>
-                            <p className="text-sm font-medium text-slate-900 dark:text-white">
-                              Email Verification
-                            </p>
-                            <p className="text-xs text-slate-500 dark:text-slate-400">
-                              {session.user.emailVerified
-                                ? "Your email is verified"
-                                : "Verify your email address"}
-                            </p>
-                          </div>
-                          {session.user.emailVerified ? (
-                            <Badge
-                              variant="secondary"
-                              className="bg-emerald-50 text-emerald-700 border-emerald-200"
-                            >
-                              Verified
-                            </Badge>
-                          ) : (
-                            <Button size="sm" variant="outline">
-                              Verify
-                            </Button>
-                          )}
-                        </div>
+                        <p className="text-sm text-slate-500 dark:text-slate-400">
+                          Password reset is available via email. Use the
+                          &quot;Forgot password&quot; link on the sign-in page
+                          to receive a reset link.
+                        </p>
                       </div>
                     </DialogContent>
                   </Dialog>
@@ -820,7 +981,6 @@ function AuthPage() {
                       type="button"
                       className="text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 transition-colors"
                       onClick={() => {
-                        // In production, wire this to a forgot-password flow
                         setAuthError(
                           "Password reset: Set up an email service (see setup instructions) to enable password reset.",
                         );
